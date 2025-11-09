@@ -1,0 +1,16 @@
+# profbuilder configuration
+# $ prof apply
+
+profile:
+  - url: https://github.com/dineshdb/profile-template
+  - path: .
+
+finally:
+  - title: copy bin/ scripts
+    if: "true"
+    then: "mkdir -p ~/bin; cp -rf bin/* ~/bin/"
+  - title: aliases
+    if: "[ true ]"
+    then: |
+      cd $HOME/.local/bin
+      ln -sf `which delta` git-delta
