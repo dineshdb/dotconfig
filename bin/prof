@@ -113,6 +113,10 @@ async function collectAllProfiles(profiles: Profile[]): Promise<Profile[]> {
     const profileConfig = await loadProfileConfig(profileDir);
     if (profileConfig?.profile?.length) {
       for (const dep of profileConfig.profile) {
+        // Skip '.' paths as they are automatically included
+        if ("path" in dep && dep.path === ".") {
+          continue;
+        }
         await collectProfile(dep);
       }
     }
