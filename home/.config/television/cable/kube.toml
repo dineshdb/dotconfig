@@ -1,0 +1,11 @@
+[metadata]
+name = "kube"
+description = "A channel to search kube config files"
+requirements = ["fd", "bat"]
+
+[source]
+command = "fd -t f --maxdepth 1 . ~/.kube"
+
+[preview]
+command = "bat -n --color=always '{}'"
+env = { BAT_THEME = "Catppuccin Mocha" }

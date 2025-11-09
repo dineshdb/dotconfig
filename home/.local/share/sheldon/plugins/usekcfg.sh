@@ -1,4 +1,4 @@
 function usekcfg() {
-        local file=$(fd -t f --maxdepth 1 . ~/.kube | tv --preview 'bat -n --color=always {0}')
-        export KUBECONFIG=$file
+    local file=$(tv --source-command 'fd -t f --maxdepth 1 . ~/.kube' --preview-command 'bat -n --color=always {}')
+    export KUBECONFIG=$file
 }

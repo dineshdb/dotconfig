@@ -1,1 +1,352 @@
-prof.ts
+#!/usr/bin/env deno run -A
+import { parse as parseYaml } from "jsr:@std/yaml";
+import { basename, join } from "jsr:@std/path";
+import { ensureDir, exists } from "jsr:@std/fs";
+import { parse as parseArgs } from "jsr:@std/flags";
+
+// Types
+type Profile = { path: string } | { url: string };
+
+interface FinallyCommand {
+  title: string;
+  if: string;
+  then: string;
+}
+
+interface Config {
+  profile?: Profile[];
+  finally?: FinallyCommand[];
+}
+
+// Constants
+const VERSION = "1.0.0";
+const DEFAULT_CONFIG_FILE = "prof.yaml";
+const INIT_CONFIG = `# profbuilder configuration
+# Define your profiles here. Profiles are applied in order.
+
+profile:
+  # Example: Clone a profile from a git repository
+  # - url: https://github.com/username/profile-template
+
+  # Example: Use a local profile directory
+  # - path: ./local-profile
+
+  # Add your profiles below:
+  - url: https://github.com/dineshdb/profile-template
+
+finally:
+  - title: "Example command"
+    if: "[ -f /path/to/file ]"
+    then: "echo 'File exists, running command'"
+`;
+
+// State
+let configPath = DEFAULT_CONFIG_FILE;
+const homeDir = Deno.env.get("HOME") ?? Deno.cwd();
+const cacheDir = join(homeDir, ".cache/prof/profiles");
+
+// Logging utilities
+const log = {
+  info: (msg: string) => console.info(msg),
+  success: (msg: string) => console.log(`✓ ${msg}`),
+  warn: (msg: string) => console.warn(`⚠ ${msg}`),
+  error: (msg: string) => console.error(`✗ ${msg}`),
+};
+
+// Command execution
+async function exec(
+  command: string,
+  options: { silent?: boolean; piped?: boolean } = { piped: true },
+): Promise<{ success: boolean; output?: string }> {
+  const process = new Deno.Command("bash", {
+    args: ["-c", command],
+    stdout: options.piped ? "piped" : "inherit",
+    stderr: options.piped ? "piped" : "inherit",
+  });
+
+  const result = await process.output();
+  const output = options.silent
+    ? undefined
+    : (options.piped
+      ? new TextDecoder().decode(result.stdout).trim()
+      : undefined);
+
+  return { success: result.success, output };
+}
+
+// Core functions
+async function initConfig(): Promise<void> {
+  if (await exists(configPath)) {
+    log.error("Configuration file already exists");
+    Deno.exit(1);
+  }
+
+  await Deno.writeTextFile(configPath, INIT_CONFIG);
+  log.success(`Created ${configPath}`);
+}
+
+async function loadConfig(configPath: string): Promise<Config> {
+  const content = await Deno.readTextFile(configPath);
+  return parseYaml(content) as Config;
+}
+
+async function loadProfileConfig(profileDir: string): Promise<Config | null> {
+  return await loadConfig(join(profileDir, "prof.yaml"));
+}
+
+async function collectAllProfiles(profiles: Profile[]): Promise<Profile[]> {
+  const allProfiles: Profile[] = [];
+  const visited = new Set<string>();
+
+  async function collectProfile(profile: Profile) {
+    const profileDir = await resolveProfile(profile);
+    if (!profileDir) return null;
+
+    if (visited.has(profileDir)) {
+      // already visited
+      return;
+    }
+
+    visited.add(profileDir);
+
+    // Collect dependencies first (topological sort)
+    const profileConfig = await loadProfileConfig(profileDir);
+    if (profileConfig?.profile?.length) {
+      for (const dep of profileConfig.profile) {
+        await collectProfile(dep);
+      }
+    }
+
+    // Add profile after dependencies
+    allProfiles.push({
+      path: profileDir,
+    });
+  }
+
+  for (const profile of profiles) {
+    await collectProfile(profile);
+  }
+
+  return allProfiles;
+}
+
+async function resolveProfile(profile: Profile): Promise<string | null> {
+  if ("url" in profile) {
+    const profileName = basename(profile.url).replace(/\.git$/, "");
+    const localPath = join(cacheDir, profileName);
+
+    await ensureDir(cacheDir);
+
+    if (await exists(localPath)) {
+      await exec(`cd "${localPath}" && git pull origin HEAD`);
+      log.success(`Updated ${profileName}`);
+    } else {
+      await exec(`git clone "${profile.url}" "${localPath}"`);
+      log.success(`Cloned ${profileName}`);
+    }
+
+    return localPath;
+  }
+
+  if (!(await exists(profile.path))) {
+    log.warn(`Profile path does not exist: ${profile.path}`);
+    return null;
+  }
+
+  return profile.path;
+}
+
+async function ensureConfigExists(): Promise<void> {
+  if (!(await exists(configPath))) {
+    log.error(`Configuration file not found: ${configPath}`);
+    log.info("Run 'prof init' to create one");
+    Deno.exit(1);
+  }
+}
+
+async function copyFiles(src: string, dest: string): Promise<void> {
+  const cmd =
+    `test -e "${src}" && mkdir -p "${dest}" && cp -rf "${src}/" "${dest}/"`;
+  await exec(cmd);
+}
+
+async function applyProfile(profileDir: string): Promise<FinallyCommand[]> {
+  log.info(`Applying ${basename(profileDir)}`);
+
+  // Copy configuration files
+  const configDir = join(profileDir, "config");
+  await copyFiles(join(configDir, "~"), homeDir);
+  await copyFiles(join(profileDir, "home"), homeDir);
+
+  // Collect profile-specific finalizers
+  const profileConfig = await loadProfileConfig(profileDir);
+  if (profileConfig?.finally?.length) {
+    return profileConfig.finally;
+  }
+
+  return [];
+}
+
+async function executeFinalCommand(command: FinallyCommand): Promise<void> {
+  const checkResult = await exec(command.if, { silent: true });
+
+  if (checkResult.success) {
+    const execResult = await exec(command.then, { piped: true });
+
+    if (execResult.success) {
+      log.success(`Executed: ${command.title}`);
+    } else {
+      log.error(`Failed: ${command.title}`);
+    }
+  }
+}
+
+async function generateGitconfigInclude(): Promise<void> {
+  const gitconfigDir = join(homeDir, ".config/gitconfig.d");
+  const includeFile = join(gitconfigDir, "_include.conf");
+
+  try {
+    await ensureDir(gitconfigDir);
+
+    // Find all .conf files not starting with _
+    const files = await Array.fromAsync(Deno.readDir(gitconfigDir));
+    const configFiles = files.filter((f) => f.isFile)
+      .filter((f) => f.name.endsWith(".conf"))
+      .filter((f) => !f.name.startsWith("_"));
+
+    if (configFiles.length > 0) {
+      let content = "[include]\n";
+      for (const file of configFiles) {
+        content += `    path = ${file.name}\n`;
+      }
+
+      await Deno.writeTextFile(includeFile, content);
+      log.success(
+        `Generated gitconfig include file with ${configFiles.length} entries`,
+      );
+    }
+  } catch (error) {
+    log.error(
+      `Failed to generate gitconfig include: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+async function apply(): Promise<void> {
+  await ensureConfigExists();
+
+  const config = await loadConfig(configPath);
+  const profiles = config.profile ?? [];
+
+  if (profiles.length === 0) {
+    log.warn("No profiles found in configuration");
+    return;
+  }
+
+  log.info(`Found ${profiles.length} profile(s)`);
+  log.info("Resolving profile dependencies...");
+
+  const allProfiles = await collectAllProfiles(profiles);
+  log.info(`Applying ${allProfiles.length} profiles...`);
+
+  // Collect all finalizers in dependency order
+  const allFinalizers: FinallyCommand[] = [];
+
+  for (const profile of allProfiles) {
+    if ("path" in profile) {
+      const profileFinalizers = await applyProfile(profile.path);
+      allFinalizers.push(...profileFinalizers);
+    }
+  }
+
+  // Execute all finalizers at the end
+  if (allFinalizers.length > 0) {
+    log.info(`Executing ${allFinalizers.length} finalizer(s)...`);
+    for (const command of allFinalizers) {
+      await executeFinalCommand(command);
+    }
+  }
+
+  // Generate gitconfig include after all finalizers
+  await generateGitconfigInclude();
+}
+
+async function clean(): Promise<void> {
+  const cacheRoot = join(homeDir, ".cache/prof");
+  await exec(`rm -rf "${cacheRoot}"`);
+  log.success("Cache cleaned");
+}
+
+function showHelp(): void {
+  console.log(`
+prof - Simple profile composition tool v${VERSION}
+
+USAGE:
+    deno run -A prof [OPTIONS] <command>
+
+OPTIONS:
+    -c, --config <file>    Use specified config file (default: ${DEFAULT_CONFIG_FILE})
+    -h, --help            Show this help message
+    --version             Show version information
+
+COMMANDS:
+    init                  Initialize a new configuration file
+    apply                 Apply all profiles from configuration
+    clean                 Clean up cached files
+    help                  Show this help message
+`.trim());
+}
+
+// Main execution
+async function main(): Promise<void> {
+  const flags = parseArgs(Deno.args, {
+    boolean: ["help", "version"],
+    string: ["config"],
+    alias: { config: "c", help: "h" },
+    default: { config: DEFAULT_CONFIG_FILE },
+  });
+
+  configPath = flags.config;
+
+  if (flags.help || flags._[0] === "help") {
+    showHelp();
+    return;
+  }
+
+  if (flags.version) {
+    console.log(`prof version ${VERSION}`);
+    return;
+  }
+
+  const command = flags._[0] as string;
+
+  try {
+    switch (command) {
+      case "init":
+        await initConfig();
+        break;
+      case "apply":
+        await apply();
+        break;
+      case "clean":
+        await clean();
+        break;
+      case undefined:
+        showHelp();
+        break;
+      default:
+        log.error(`Unknown command: ${command}`);
+        console.log("Run 'prof --help' for usage information.");
+        Deno.exit(1);
+    }
+  } catch (err) {
+    log.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    Deno.exit(1);
+  }
+}
+
+if (import.meta.main) {
+  await main();
+}
