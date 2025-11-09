@@ -1,0 +1,11 @@
+#!/usr/bin/bash
+
+IFS_BAK=$IFS
+IFS="
+"
+
+for line in $NAUTILUS_SCRIPT_SELECTED_FILE_PATHS; do
+	sort -uo $line $line
+done
+
+IFS=$IFS_BAK

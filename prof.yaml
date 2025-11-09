@@ -2,13 +2,15 @@
 # $ prof apply
 
 profile:
-  - url: https://github.com/dineshdb/profile-template
   - path: .
 
 finally:
   - title: copy bin/ scripts
     if: "true"
     then: "mkdir -p ~/bin; cp -rf bin/* ~/bin/"
+  - title: enable delta pager for git
+    if: which delta
+    then: mv ~/.config/gitconfig.d/_gt_delta.conf ~/.config/gitconfig.d/gt_delta.conf
   - title: aliases
     if: "[ true ]"
     then: |

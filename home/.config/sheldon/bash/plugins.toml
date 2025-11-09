@@ -1,0 +1,128 @@
+# `sheldon` configuration file
+# ----------------------------
+#
+# You can modify this file directly or you can use one of the following
+# `sheldon` commands which are provided to assist in editing the config file:
+#
+# - `sheldon add` to add a new plugin to the config file
+# - `sheldon edit` to open up the config file in the default editor
+# - `sheldon remove` to remove a plugin from the config file
+#
+# See the documentation for more https://github.com/rossmacarthur/sheldon#readme
+
+shell = "bash"
+[plugins]
+
+[plugins.base16]
+github = "chriskempson/base16-shell"
+profiles = ["zsh"]
+
+[plugins.blackbox]
+github = 'StackExchange/blackbox'
+
+[plugins.git-ignore]
+github = "laggardkernel/git-ignore"
+use = ['*.zsh']
+profiles = ["zsh"]
+
+[plugins.git-fuzzy]
+git = "https://github.com/bigH/git-fuzzy.git"
+apply = ["path-bin"]
+
+[plugins.notes]
+git = 'https://github.com/chipsenkbeil/zsh-notes'
+
+[plugins.appup]
+git = 'https://github.com/Cloudstek/zsh-plugin-appup'
+profiles = ["zsh"]
+
+[plugins.gtr]
+git = 'https://github.com/Zocker1999NET/zsh-gtr'
+profiles = ["zsh"]
+
+[plugins.fzf]
+git = "https://github.com/junegunn/fzf"
+use = ["*.zsh"]
+profiles = ["zsh"]
+
+[plugins.fzf-tab]
+git = 'https://github.com/Aloxaf/fzf-tab'
+use = ["fzf-tab.zsh"]
+profiles = ["zsh"]
+
+[plugins.forgit]
+git = 'https://github.com/wfxr/forgit'
+profiles = ["zsh"]
+
+[plugins.expand]
+github = 'MenkeTechnologies/zsh-expand'
+profiles = ["zsh"]
+
+[plugins.emoji-cli]
+git = 'https://github.com/b4b4r07/emoji-cli'
+
+[plugins.clipboard]
+git = 'https://github.com/zpm-zsh/clipboard.git'
+profiles = ["zsh"]
+
+[plugins.aliases-docker]
+git = 'https://github.com/webyneter/docker-aliases'
+
+[plugins.ohmyzsh-kubectl]
+remote = "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/plugins/kubectl/kubectl.plugin.zsh"
+profiles = ["zsh"]
+
+[plugins.ohmyzsh-systemd]
+remote = "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/plugins/systemd/systemd.plugin.zsh"
+profiles = ["zsh"]
+
+[plugins.ohmyzsh-rsync]
+remote = "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/plugins/rsync/rsync.plugin.zsh"
+
+[plugins.ohmyzsh-extract]
+remote = "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/plugins/extract/extract.plugin.zsh"
+profiles = ["zsh"]
+
+[plugins.ohmyzsh-ansible]
+remote = "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/plugins/ansible/ansible.plugin.zsh"
+
+[plugins.zsh-defer]
+github = "romkatv/zsh-defer"
+
+[plugins.zsh-syntax-highlighting]
+github = "zsh-users/zsh-syntax-highlighting"
+apply = ["defer"]
+
+[plugins.zsh-autosuggestions]
+github = "zsh-users/zsh-autosuggestions"
+use = ["{{ name }}.zsh"]
+
+[plugins.zsh-completions]
+github = "zsh-users/zsh-completions"
+apply = ["fpath", "defer"]
+
+[plugins.zsh-history-substring-search]
+github = "zsh-users/zsh-history-substring-search"
+
+[plugins.compinit]
+inline = 'autoload -Uz compinit && compinit'
+
+[plugins.git-extras]
+git = "https://github.com/unixorn/git-extra-commands"
+use = ["*.zsh"]
+profiles = ["zsh"]
+
+[plugins.watch]
+git = 'https://github.com/enrico9034/zsh-watch-plugin'
+profiles = ["zsh"]
+
+[plugins.local]
+local = "~/.local/share/sheldon/plugins"
+use = ["*.sh"]
+
+[templates]
+defer = """{% for file in files %}
+zsh-defer source "{{ file }}"
+{% endfor %}"""
+path-bin = 'export PATH="$PATH:{{ dir }}/bin"'
+path-src = 'export PATH="$PATH:{{ dir }}/src"'

@@ -1,0 +1,1 @@
+export PKGX_UNSAFE_INSTALL=true
