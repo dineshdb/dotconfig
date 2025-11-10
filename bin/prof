@@ -1,6 +1,6 @@
 #!/usr/bin/env deno run -A
 import { parse as parseYaml } from "jsr:@std/yaml";
-import { basename, join } from "jsr:@std/path";
+import { basename, join, dirname } from "jsr:@std/path";
 import { ensureDir, exists } from "jsr:@std/fs";
 import { parse as parseArgs } from "jsr:@std/flags";
 
@@ -181,6 +181,7 @@ async function applyProfile(profileDir: string): Promise<FinallyCommand[]> {
   const configDir = join(profileDir, "config");
   await copyFiles(join(configDir, "~"), homeDir);
   await copyFiles(join(profileDir, "home"), homeDir);
+  await installFirefoxUserJs(profileDir);
 
   // Collect profile-specific finalizers
   const profileConfig = await loadProfileConfig(profileDir);
@@ -281,6 +282,86 @@ async function clean(): Promise<void> {
   const cacheRoot = join(homeDir, ".cache/prof");
   await exec(`rm -rf "${cacheRoot}"`);
   log.success("Cache cleaned");
+}
+
+async function findFirefoxProfiles(): Promise<string[]> {
+  const profilePaths: string[] = [];
+
+  // Check macOS Firefox profiles location
+  const macProfileDir = join(homeDir, "Library/Application Support/Firefox/Profiles");
+  if (await exists(macProfileDir)) {
+    try {
+      for await (const entry of Deno.readDir(macProfileDir)) {
+        if (entry.isDirectory && entry.name.includes(".default")) {
+          profilePaths.push(join(macProfileDir, entry.name));
+        }
+      }
+    } catch (error) {
+      log.warn(`Could not read macOS Firefox profiles: ${error}`);
+    }
+  }
+
+  // Check Linux Firefox profiles location
+  const linuxProfileDir = join(homeDir, ".mozilla/firefox");
+  if (await exists(linuxProfileDir)) {
+    try {
+      const profilesIni = join(linuxProfileDir, "profiles.ini");
+      if (await exists(profilesIni)) {
+        const content = await Deno.readTextFile(profilesIni);
+        const matches = content.match(/^Path=(.+)$/gm);
+        if (matches) {
+          for (const match of matches) {
+            const path = match.split("=")[1].trim();
+            if (path.includes("default")) {
+              profilePaths.push(join(linuxProfileDir, path));
+            }
+          }
+        }
+      }
+
+      // Also scan for directories with default in name
+      for await (const entry of Deno.readDir(linuxProfileDir)) {
+        if (entry.isDirectory && entry.name.includes(".default")) {
+          const fullPath = join(linuxProfileDir, entry.name);
+          if (!profilePaths.includes(fullPath)) {
+            profilePaths.push(fullPath);
+          }
+        }
+      }
+    } catch (error) {
+      log.warn(`Could not read Linux Firefox profiles: ${error}`);
+    }
+  }
+
+  return profilePaths;
+}
+
+async function installFirefoxUserJs(profileDir: string): Promise<void> {
+  const userJsPath = join(profileDir, "home/.mozilla/user.js");
+  if (!(await exists(userJsPath))) {
+    return
+  }
+
+  const profiles = await findFirefoxProfiles();
+
+  if (profiles.length === 0) {
+    log.warn("No Firefox profiles found");
+    return;
+  }
+
+  log.info(`Installing user.js to ${profiles.length} Firefox profile(s)...`);
+  let successCount = 0;
+  for (const profile of profiles) {
+    try {
+      await Deno.copyFile(userJsPath, join(profile, "user.js"));
+      log.success(`Installed user.js to ${basename(profile)}`);
+      successCount++;
+    } catch (error) {
+      log.error(`Failed to install user.js to ${basename(profile)}: ${error}`);
+    }
+  }
+
+  log.info(`Successfully installed user.js to ${successCount}/${profiles.length} profiles`);
 }
 
 function showHelp(): void {
