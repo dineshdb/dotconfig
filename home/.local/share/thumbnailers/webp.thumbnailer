@@ -1,0 +1,4 @@
+[Thumbnailer Entry]
+Exec=convert -define jpeg:size=100x100 %i -thumbnail '100x100>' %o
+MimeType=image/x-webp;image/webp;
+

@@ -1,0 +1,4 @@
+[Thumbnailer Entry]
+Exec=ffmpeg -i "%i" -t 2 -r 0.5 "%o"
+MimeType=video/x-webm;video/webm;video/mp4;video/x-matroska;
+
