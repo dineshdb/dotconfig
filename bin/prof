@@ -3,6 +3,7 @@ import { parse as parseYaml } from "jsr:@std/yaml";
 import { basename, join, dirname } from "jsr:@std/path";
 import { ensureDir, exists } from "jsr:@std/fs";
 import { parse as parseArgs } from "jsr:@std/flags";
+import { parse as parseCsv } from "jsr:@std/csv";
 
 // Types
 type Profile = { path: string } | { url: string };
@@ -183,6 +184,11 @@ async function applyProfile(profileDir: string): Promise<FinallyCommand[]> {
   await copyFiles(join(profileDir, "home"), homeDir);
   await installFirefoxUserJs(profileDir);
 
+  const sshCsvPath = join(profileDir, "config/ssh.csv");
+  if (await exists(sshCsvPath)) {
+    await generateSshConfig(sshCsvPath);
+  }
+
   // Collect profile-specific finalizers
   const profileConfig = await loadProfileConfig(profileDir);
   if (profileConfig?.finally?.length) {
@@ -233,6 +239,59 @@ async function generateGitconfigInclude(): Promise<void> {
   } catch (error) {
     log.error(
       `Failed to generate gitconfig include: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+async function generateSshConfig(sshCsvPath: string): Promise<void> {
+  try {
+    const csvContent = await Deno.readTextFile(sshCsvPath);
+    const records = parseCsv(csvContent, {
+      skipFirstRow: true,
+      columns: ["name", "user", "ip", "port"],
+    });
+
+    // Filter out empty records
+    const validRecords = records.filter((record: any) =>
+      record.name && record.name.trim() &&
+      record.user && record.user.trim() &&
+      record.ip && record.ip.trim()
+    );
+
+    if (validRecords.length === 0) {
+      log.warn("No valid SSH entries found in CSV file");
+      return;
+    }
+
+    const sshConfigDir = join(homeDir, ".ssh", "conf.d");
+    await ensureDir(sshConfigDir);
+
+    const sshConfigFile = join(sshConfigDir, "sshcsv.conf");
+
+    let configContent = "# Generated SSH config using prof\n";
+    configContent += "# Do not edit manually - regenerate with 'prof apply'\n\n";
+
+    for (const record of validRecords) {
+      const host = record.name.trim();
+      const user = record.user.trim();
+      const hostname = record.ip.trim();
+      const port = record.port?.trim() || "22";
+
+      configContent += `Host ${host}\n`;
+      configContent += `    HostName ${hostname}\n`;
+      configContent += `    User ${user}\n`;
+      configContent += `    Port ${port}\n`;
+      configContent += `    StrictHostKeyChecking accept-new\n`;
+      configContent += `\n`;
+    }
+
+    await Deno.writeTextFile(sshConfigFile, configContent);
+
+  } catch (error) {
+    log.error(
+      `Failed to generate SSH config: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
