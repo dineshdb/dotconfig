@@ -1,4 +1,4 @@
-#!/usr/bin/env deno run -A
+#!/usr/bin/env -S deno run -A
 import { parse as parseYaml } from "jsr:@std/yaml";
 import { basename, join, dirname } from "jsr:@std/path";
 import { ensureDir, exists } from "jsr:@std/fs";
@@ -68,9 +68,9 @@ async function exec(
   const result = await process.output();
   const output = options.silent
     ? undefined
-    : (options.piped
+    : options.piped
       ? new TextDecoder().decode(result.stdout).trim()
-      : undefined);
+      : undefined;
 
   return { success: result.success, output };
 }
@@ -170,8 +170,7 @@ async function ensureConfigExists(): Promise<void> {
 }
 
 async function copyFiles(src: string, dest: string): Promise<void> {
-  const cmd =
-    `test -e "${src}" && mkdir -p "${dest}" && cp -rf "${src}/" "${dest}/"`;
+  const cmd = `test -e "${src}" && mkdir -p "${dest}" && cp -rf "${src}/" "${dest}/"`;
   await exec(cmd);
 }
 
@@ -205,7 +204,7 @@ async function executeFinalCommand(command: FinallyCommand): Promise<void> {
     const execResult = await exec(command.then, { piped: true });
 
     if (execResult.success) {
-      log.success(`Executed: ${command.title}`);
+      log.success(`${command.title}`);
     } else {
       log.error(`Failed: ${command.title}`);
     }
@@ -221,7 +220,8 @@ async function generateGitconfigInclude(): Promise<void> {
 
     // Find all .conf files not starting with _
     const files = await Array.fromAsync(Deno.readDir(gitconfigDir));
-    const configFiles = files.filter((f) => f.isFile)
+    const configFiles = files
+      .filter((f) => f.isFile)
       .filter((f) => f.name.endsWith(".conf"))
       .filter((f) => !f.name.startsWith("_"));
 
@@ -232,14 +232,11 @@ async function generateGitconfigInclude(): Promise<void> {
       }
 
       await Deno.writeTextFile(includeFile, content);
-      log.success(
-        `Generated gitconfig include file with ${configFiles.length} entries`,
-      );
+      log.success(`Generated gitconfig include file with ${configFiles.length} entries`);
     }
   } catch (error) {
     log.error(
-      `Failed to generate gitconfig include: ${
-        error instanceof Error ? error.message : String(error)
+      `Failed to generate gitconfig include: ${error instanceof Error ? error.message : String(error)
       }`,
     );
   }
@@ -254,10 +251,14 @@ async function generateSshConfig(sshCsvPath: string): Promise<void> {
     });
 
     // Filter out empty records
-    const validRecords = records.filter((record: any) =>
-      record.name && record.name.trim() &&
-      record.user && record.user.trim() &&
-      record.ip && record.ip.trim()
+    const validRecords = records.filter(
+      (record: any) =>
+        record.name &&
+        record.name.trim() &&
+        record.user &&
+        record.user.trim() &&
+        record.ip &&
+        record.ip.trim(),
     );
 
     if (validRecords.length === 0) {
@@ -288,12 +289,9 @@ async function generateSshConfig(sshCsvPath: string): Promise<void> {
     }
 
     await Deno.writeTextFile(sshConfigFile, configContent);
-
   } catch (error) {
     log.error(
-      `Failed to generate SSH config: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `Failed to generate SSH config: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 }
@@ -398,7 +396,7 @@ async function findFirefoxProfiles(): Promise<string[]> {
 async function installFirefoxUserJs(profileDir: string): Promise<void> {
   const userJsPath = join(profileDir, "home/.mozilla/user.js");
   if (!(await exists(userJsPath))) {
-    return
+    return;
   }
 
   const profiles = await findFirefoxProfiles();
@@ -424,7 +422,8 @@ async function installFirefoxUserJs(profileDir: string): Promise<void> {
 }
 
 function showHelp(): void {
-  console.log(`
+  console.log(
+    `
 prof - Simple profile composition tool v${VERSION}
 
 USAGE:
@@ -440,7 +439,8 @@ COMMANDS:
     apply                 Apply all profiles from configuration
     clean                 Clean up cached files
     help                  Show this help message
-`.trim());
+`.trim(),
+  );
 }
 
 // Main execution
