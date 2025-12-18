@@ -16,3 +16,6 @@ finally:
     then: |
       cd $HOME/.local/bin
       ln -sf `which delta` git-delta
+
+skills:
+  - url: https://github.com/anthropics/skills

@@ -1,6 +1,6 @@
 #!/usr/bin/env -S deno run -A
 import { parse as parseYaml } from "jsr:@std/yaml";
-import { basename, join, dirname } from "jsr:@std/path";
+import { basename, dirname, join } from "jsr:@std/path";
 import { ensureDir, exists } from "jsr:@std/fs";
 import { parse as parseArgs } from "jsr:@std/flags";
 import { parse as parseCsv } from "jsr:@std/csv";
@@ -8,16 +8,21 @@ import { parse as parseCsv } from "jsr:@std/csv";
 // Types
 type Profile = { path: string } | { url: string };
 
-interface FinallyCommand {
+type FinallyCommand = {
   title: string;
   if: string;
   then: string;
-}
+};
 
-interface Config {
+type SkillRepo = {
+  url: string;
+};
+
+type Config = {
   profile?: Profile[];
   finally?: FinallyCommand[];
-}
+  skills?: SkillRepo[];
+};
 
 // Constants
 const VERSION = "1.0.0";
@@ -39,6 +44,12 @@ finally:
   - title: "Example command"
     if: "[ -f /path/to/file ]"
     then: "echo 'File exists, running command'"
+
+skills:
+  # List of git repositories containing Claude skills
+  repos:
+    # - https://github.com/example/claude-skills
+    # - https://github.com/user/some-skills-repo
 `;
 
 // State
@@ -69,8 +80,8 @@ async function exec(
   const output = options.silent
     ? undefined
     : options.piped
-      ? new TextDecoder().decode(result.stdout).trim()
-      : undefined;
+    ? new TextDecoder().decode(result.stdout).trim()
+    : undefined;
 
   return { success: result.success, output };
 }
@@ -170,7 +181,8 @@ async function ensureConfigExists(): Promise<void> {
 }
 
 async function copyFiles(src: string, dest: string): Promise<void> {
-  const cmd = `test -e "${src}" && mkdir -p "${dest}" && cp -rf "${src}/" "${dest}/"`;
+  const cmd =
+    `test -e "${src}" && mkdir -p "${dest}" && cp -rf "${src}/" "${dest}/"`;
   await exec(cmd);
 }
 
@@ -232,11 +244,14 @@ async function generateGitconfigInclude(): Promise<void> {
       }
 
       await Deno.writeTextFile(includeFile, content);
-      log.success(`Generated gitconfig include file with ${configFiles.length} entries`);
+      log.success(
+        `Generated gitconfig include file with ${configFiles.length} entries`,
+      );
     }
   } catch (error) {
     log.error(
-      `Failed to generate gitconfig include: ${error instanceof Error ? error.message : String(error)
+      `Failed to generate gitconfig include: ${
+        error instanceof Error ? error.message : String(error)
       }`,
     );
   }
@@ -272,7 +287,8 @@ async function generateSshConfig(sshCsvPath: string): Promise<void> {
     const sshConfigFile = join(sshConfigDir, "sshcsv.conf");
 
     let configContent = "# Generated SSH config using prof\n";
-    configContent += "# Do not edit manually - regenerate with 'prof apply'\n\n";
+    configContent +=
+      "# Do not edit manually - regenerate with 'prof apply'\n\n";
 
     for (const record of validRecords) {
       const host = record.name.trim();
@@ -291,7 +307,9 @@ async function generateSshConfig(sshCsvPath: string): Promise<void> {
     await Deno.writeTextFile(sshConfigFile, configContent);
   } catch (error) {
     log.error(
-      `Failed to generate SSH config: ${error instanceof Error ? error.message : String(error)}`,
+      `Failed to generate SSH config: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     );
   }
 }
@@ -331,6 +349,16 @@ async function apply(): Promise<void> {
     }
   }
 
+  // Setup skills if configured
+  if (config.skills?.length) {
+    log.info(
+      `Setting up skills from ${config.skills.length} repository/repositories...`,
+    );
+    for (const repo of config.skills) {
+      await setupSkills(repo.url);
+    }
+  }
+
   // Generate gitconfig include after all finalizers
   await generateGitconfigInclude();
 }
@@ -341,11 +369,55 @@ async function clean(): Promise<void> {
   log.success("Cache cleaned");
 }
 
+async function setupSkills(repoUrl: string): Promise<void> {
+  const cacheDir = join(
+    homeDir,
+    ".local/share/claude/skills/cache",
+    repoUrl.replace(/^https?:\/\/[^\/]+\//, "").replace(/\.git$/, ""),
+  );
+
+  await ensureDir(dirname(cacheDir));
+  await ensureDir(join(homeDir, ".claude/skills"));
+
+  log.info(`Cloning ${repoUrl}...`);
+
+  // Try to pull if exists, otherwise clone
+  const pullResult = await exec(`cd "${cacheDir}" && git pull 2>/dev/null`, {
+    silent: true,
+  });
+  if (!pullResult.success) {
+    await exec(`git clone ${repoUrl} "${cacheDir}"`);
+  }
+
+  log.info("Installing skills...");
+
+  // Find all SKILL.md files and copy their parent directories
+  const findResult = await exec(
+    `find "${cacheDir}" -name "SKILL.md" -exec dirname {} \\;`,
+    { piped: true },
+  );
+
+  if (findResult.success && findResult.output) {
+    const skillDirs = findResult.output.trim().split("\n").filter((dir) =>
+      dir.trim()
+    );
+
+    for (const skillDir of skillDirs) {
+      await exec(`cp -rf "${skillDir}" ~/.claude/skills/`);
+    }
+  }
+
+  log.success("Done!");
+}
+
 async function findFirefoxProfiles(): Promise<string[]> {
   const profilePaths: string[] = [];
 
   // Check macOS Firefox profiles location
-  const macProfileDir = join(homeDir, "Library/Application Support/Firefox/Profiles");
+  const macProfileDir = join(
+    homeDir,
+    "Library/Application Support/Firefox/Profiles",
+  );
   if (await exists(macProfileDir)) {
     try {
       for await (const entry of Deno.readDir(macProfileDir)) {
@@ -418,7 +490,9 @@ async function installFirefoxUserJs(profileDir: string): Promise<void> {
     }
   }
 
-  log.info(`Successfully installed user.js to ${successCount}/${profiles.length} profiles`);
+  log.info(
+    `Successfully installed user.js to ${successCount}/${profiles.length} profiles`,
+  );
 }
 
 function showHelp(): void {
@@ -438,6 +512,7 @@ COMMANDS:
     init                  Initialize a new configuration file
     apply                 Apply all profiles from configuration
     clean                 Clean up cached files
+    setup-skills <url>    Setup Claude skills from a git repository
     help                  Show this help message
 `.trim(),
   );
@@ -476,6 +551,15 @@ async function main(): Promise<void> {
         break;
       case "clean":
         await clean();
+        break;
+      case "setup-skills":
+        const repoUrl = flags._[1] as string;
+        if (!repoUrl) {
+          log.error("Repository URL is required for setup-skills command");
+          console.log("Usage: prof setup-skills <repository-url>");
+          Deno.exit(1);
+        }
+        await setupSkills(repoUrl);
         break;
       case undefined:
         showHelp();
