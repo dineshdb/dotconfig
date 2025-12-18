@@ -1,7 +1,7 @@
 #!/usr/bin/env -S deno run -A
 import { parse as parseYaml } from "jsr:@std/yaml";
 import { basename, dirname, join } from "jsr:@std/path";
-import { ensureDir, exists } from "jsr:@std/fs";
+import { ensureDirSync, existsSync } from "jsr:@std/fs";
 import { parse as parseArgs } from "jsr:@std/flags";
 import { parse as parseCsv } from "jsr:@std/csv";
 
@@ -27,17 +27,8 @@ type Config = {
 // Constants
 const VERSION = "1.0.0";
 const DEFAULT_CONFIG_FILE = "prof.yaml";
-const INIT_CONFIG = `# profbuilder configuration
-# Define your profiles here. Profiles are applied in order.
-
+const INIT_CONFIG = `# prof configuration
 profile:
-  # Example: Clone a profile from a git repository
-  # - url: https://github.com/username/profile-template
-
-  # Example: Use a local profile directory
-  # - path: ./local-profile
-
-  # Add your profiles below:
   - url: https://github.com/dineshdb/profile-template
 
 finally:
@@ -46,10 +37,7 @@ finally:
     then: "echo 'File exists, running command'"
 
 skills:
-  # List of git repositories containing Claude skills
-  repos:
-    # - https://github.com/example/claude-skills
-    # - https://github.com/user/some-skills-repo
+  - url: https://github.com/example/claude-skills
 `;
 
 // State
@@ -66,142 +54,125 @@ const log = {
 };
 
 // Command execution
-async function exec(
+function exec(
   command: string,
   options: { silent?: boolean; piped?: boolean } = { piped: true },
-): Promise<{ success: boolean; output?: string }> {
+): { success: boolean; output?: string } {
   const process = new Deno.Command("bash", {
     args: ["-c", command],
     stdout: options.piped ? "piped" : "inherit",
     stderr: options.piped ? "piped" : "inherit",
   });
 
-  const result = await process.output();
+  const result = process.outputSync();
   const output = options.silent
     ? undefined
     : options.piped
-    ? new TextDecoder().decode(result.stdout).trim()
-    : undefined;
+      ? new TextDecoder().decode(result.stdout).trim()
+      : undefined;
 
   return { success: result.success, output };
 }
 
 // Core functions
-async function initConfig(): Promise<void> {
-  if (await exists(configPath)) {
+function initConfig(): void {
+  if (existsSync(configPath)) {
     log.error("Configuration file already exists");
     Deno.exit(1);
   }
 
-  await Deno.writeTextFile(configPath, INIT_CONFIG);
+  Deno.writeTextFileSync(configPath, INIT_CONFIG);
   log.success(`Created ${configPath}`);
 }
 
-async function loadConfig(configPath: string): Promise<Config> {
-  const content = await Deno.readTextFile(configPath);
+function loadConfig(configPath: string): Config {
+  const content = Deno.readTextFileSync(configPath);
   return parseYaml(content) as Config;
 }
 
-async function loadProfileConfig(profileDir: string): Promise<Config | null> {
-  return await loadConfig(join(profileDir, "prof.yaml"));
+function loadProfileConfig(profileDir: string): Config | null {
+  const configPath = join(profileDir, "prof.yaml");
+  return existsSync(configPath) ? loadConfig(configPath) : null;
 }
 
-async function collectAllProfiles(profiles: Profile[]): Promise<Profile[]> {
+function collectAllProfiles(profiles: Profile[]): Profile[] {
   const allProfiles: Profile[] = [];
   const visited = new Set<string>();
 
-  async function collectProfile(profile: Profile) {
-    const profileDir = await resolveProfile(profile);
-    if (!profileDir) return null;
-
-    if (visited.has(profileDir)) {
-      // already visited
-      return;
-    }
+  function collectProfile(profile: Profile) {
+    const profileDir = resolveProfile(profile);
+    if (!profileDir || visited.has(profileDir)) return;
 
     visited.add(profileDir);
+    const profileConfig = loadProfileConfig(profileDir);
 
-    // Collect dependencies first (topological sort)
-    const profileConfig = await loadProfileConfig(profileDir);
     if (profileConfig?.profile?.length) {
       for (const dep of profileConfig.profile) {
-        // Skip '.' paths as they are automatically included
-        if ("path" in dep && dep.path === ".") {
-          continue;
+        if (!("path" in dep) || dep.path !== ".") {
+          collectProfile(dep);
         }
-        await collectProfile(dep);
       }
     }
 
-    // Add profile after dependencies
-    allProfiles.push({
-      path: profileDir,
-    });
+    allProfiles.push({ path: profileDir });
   }
 
-  for (const profile of profiles) {
-    await collectProfile(profile);
-  }
-
+  profiles.forEach(collectProfile);
   return allProfiles;
 }
 
-async function resolveProfile(profile: Profile): Promise<string | null> {
+function resolveProfile(profile: Profile): string | null {
   if ("url" in profile) {
     const profileName = basename(profile.url).replace(/\.git$/, "");
     const localPath = join(cacheDir, profileName);
 
-    await ensureDir(cacheDir);
+    ensureDirSync(cacheDir);
 
-    if (await exists(localPath)) {
-      await exec(`cd "${localPath}" && git pull origin HEAD`);
-      log.success(`Updated ${profileName}`);
-    } else {
-      await exec(`git clone "${profile.url}" "${localPath}"`);
-      log.success(`Cloned ${profileName}`);
-    }
+    const action = existsSync(localPath) ? "Updated" : "Cloned";
+    const cmd = existsSync(localPath)
+      ? `cd "${localPath}" && git pull origin HEAD`
+      : `git clone "${profile.url}" "${localPath}"`;
+
+    exec(cmd);
+    log.success(`${action} ${profileName}`);
 
     return localPath;
   }
 
-  if (!(await exists(profile.path))) {
+  return existsSync(profile.path) ? profile.path : (() => {
     log.warn(`Profile path does not exist: ${profile.path}`);
     return null;
-  }
-
-  return profile.path;
+  })();
 }
 
-async function ensureConfigExists(): Promise<void> {
-  if (!(await exists(configPath))) {
+function ensureConfigExists(): void {
+  if (!existsSync(configPath)) {
     log.error(`Configuration file not found: ${configPath}`);
     log.info("Run 'prof init' to create one");
     Deno.exit(1);
   }
 }
 
-async function copyFiles(src: string, dest: string): Promise<void> {
-  const cmd =
-    `test -e "${src}" && mkdir -p "${dest}" && cp -rf "${src}/" "${dest}/"`;
-  await exec(cmd);
+function copyFiles(src: string, dest: string): void {
+  exec(`test -e "${src}" && mkdir -p "${dest}" && cp -rf "${src}/" "${dest}/"`);
 }
 
-async function applyProfile(profileDir: string): Promise<FinallyCommand[]> {
+function applyProfile(profileDir: string): FinallyCommand[] {
   log.info(`Applying ${basename(profileDir)}`);
 
   // Copy configuration files
   const configDir = join(profileDir, "config");
-  await copyFiles(join(configDir, "~"), homeDir);
-  await copyFiles(join(profileDir, "home"), homeDir);
-  await installFirefoxUserJs(profileDir);
+  copyFiles(join(configDir, "~"), homeDir);
+  copyFiles(join(profileDir, "home"), homeDir);
+  installFirefoxUserJs(profileDir);
 
   const sshCsvPath = join(profileDir, "config/ssh.csv");
-  if (await exists(sshCsvPath)) {
-    await generateSshConfig(sshCsvPath);
+  if (existsSync(sshCsvPath)) {
+    generateSshConfig(sshCsvPath);
   }
 
   // Collect profile-specific finalizers
-  const profileConfig = await loadProfileConfig(profileDir);
+  const profileConfig = loadProfileConfig(profileDir);
   if (profileConfig?.finally?.length) {
     return profileConfig.finally;
   }
@@ -209,71 +180,45 @@ async function applyProfile(profileDir: string): Promise<FinallyCommand[]> {
   return [];
 }
 
-async function executeFinalCommand(command: FinallyCommand): Promise<void> {
-  const checkResult = await exec(command.if, { silent: true });
-
-  if (checkResult.success) {
-    const execResult = await exec(command.then, { piped: true });
-
-    if (execResult.success) {
-      log.success(`${command.title}`);
-    } else {
-      log.error(`Failed: ${command.title}`);
-    }
+function executeFinalCommand(command: FinallyCommand): void {
+  if (exec(command.if, { silent: true }).success) {
+    const execResult = exec(command.then, { piped: true });
+    const logFn = execResult.success ? log.success : log.error;
+    logFn(`${execResult.success ? "" : "Failed: "}${command.title}`);
   }
 }
 
-async function generateGitconfigInclude(): Promise<void> {
+function generateGitconfigInclude(): void {
   const gitconfigDir = join(homeDir, ".config/gitconfig.d");
   const includeFile = join(gitconfigDir, "_include.conf");
 
   try {
-    await ensureDir(gitconfigDir);
+    ensureDirSync(gitconfigDir);
 
-    // Find all .conf files not starting with _
-    const files = await Array.fromAsync(Deno.readDir(gitconfigDir));
-    const configFiles = files
-      .filter((f) => f.isFile)
-      .filter((f) => f.name.endsWith(".conf"))
-      .filter((f) => !f.name.startsWith("_"));
+    const configFiles = Array.from(Deno.readDirSync(gitconfigDir))
+      .filter((f) =>
+        f.isFile && f.name.endsWith(".conf") && !f.name.startsWith("_")
+      );
 
     if (configFiles.length > 0) {
-      let content = "[include]\n";
-      for (const file of configFiles) {
-        content += `    path = ${file.name}\n`;
-      }
-
-      await Deno.writeTextFile(includeFile, content);
-      log.success(
-        `Generated gitconfig include file with ${configFiles.length} entries`,
-      );
+      const content = "[include]\n" +
+        configFiles.map((f) => `    path = ${f.name}\n`).join("");
+      Deno.writeTextFileSync(includeFile, content);
     }
   } catch (error) {
-    log.error(
-      `Failed to generate gitconfig include: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
+    log.error(`Failed to generate gitconfig include: ${String(error.message ?? error)}`);
   }
 }
 
-async function generateSshConfig(sshCsvPath: string): Promise<void> {
+function generateSshConfig(sshCsvPath: string): void {
   try {
-    const csvContent = await Deno.readTextFile(sshCsvPath);
-    const records = parseCsv(csvContent, {
+    const records = parseCsv(Deno.readTextFileSync(sshCsvPath), {
       skipFirstRow: true,
       columns: ["name", "user", "ip", "port"],
     });
 
-    // Filter out empty records
-    const validRecords = records.filter(
-      (record: any) =>
-        record.name &&
-        record.name.trim() &&
-        record.user &&
-        record.user.trim() &&
-        record.ip &&
-        record.ip.trim(),
+    const validRecords = records.filter((r: any) =>
+      r.name?.trim() && r.user?.trim() && r.ip?.trim()
     );
 
     if (validRecords.length === 0) {
@@ -282,42 +227,30 @@ async function generateSshConfig(sshCsvPath: string): Promise<void> {
     }
 
     const sshConfigDir = join(homeDir, ".ssh", "conf.d");
-    await ensureDir(sshConfigDir);
+    ensureDirSync(sshConfigDir);
 
-    const sshConfigFile = join(sshConfigDir, "sshcsv.conf");
+    const configContent =
+      "# Generated SSH config using prof\n# Do not edit manually - regenerate with 'prof apply'\n\n" +
+      validRecords.map((record) => {
+        const [host, user, hostname, port = "22"] = [
+          record.name.trim(),
+          record.user.trim(),
+          record.ip.trim(),
+          record.port?.trim(),
+        ];
+        return `Host ${host}\n    HostName ${hostname}\n    User ${user}\n    Port ${port}\n    StrictHostKeyChecking accept-new\n\n`;
+      }).join("");
 
-    let configContent = "# Generated SSH config using prof\n";
-    configContent +=
-      "# Do not edit manually - regenerate with 'prof apply'\n\n";
-
-    for (const record of validRecords) {
-      const host = record.name.trim();
-      const user = record.user.trim();
-      const hostname = record.ip.trim();
-      const port = record.port?.trim() || "22";
-
-      configContent += `Host ${host}\n`;
-      configContent += `    HostName ${hostname}\n`;
-      configContent += `    User ${user}\n`;
-      configContent += `    Port ${port}\n`;
-      configContent += `    StrictHostKeyChecking accept-new\n`;
-      configContent += `\n`;
-    }
-
-    await Deno.writeTextFile(sshConfigFile, configContent);
+    Deno.writeTextFileSync(join(sshConfigDir, "sshcsv.conf"), configContent);
   } catch (error) {
-    log.error(
-      `Failed to generate SSH config: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
+    log.error(`Failed to generate gitconfig include: ${String(error.message ?? error)}`);
   }
 }
 
-async function apply(): Promise<void> {
-  await ensureConfigExists();
+function apply(): void {
+  ensureConfigExists();
 
-  const config = await loadConfig(configPath);
+  const config = loadConfig(configPath);
   const profiles = config.profile ?? [];
 
   if (profiles.length === 0) {
@@ -328,150 +261,138 @@ async function apply(): Promise<void> {
   log.info(`Found ${profiles.length} profile(s)`);
   log.info("Resolving profile dependencies...");
 
-  const allProfiles = await collectAllProfiles(profiles);
+  const allProfiles = collectAllProfiles(profiles);
   log.info(`Applying ${allProfiles.length} profiles...`);
 
-  // Collect all finalizers in dependency order
-  const allFinalizers: FinallyCommand[] = [];
+  const allFinalizers = allProfiles
+    .filter((p) => "path" in p)
+    .flatMap((p) => applyProfile(p.path));
 
-  for (const profile of allProfiles) {
-    if ("path" in profile) {
-      const profileFinalizers = await applyProfile(profile.path);
-      allFinalizers.push(...profileFinalizers);
-    }
-  }
-
-  // Execute all finalizers at the end
   if (allFinalizers.length > 0) {
     log.info(`Executing ${allFinalizers.length} finalizer(s)...`);
-    for (const command of allFinalizers) {
-      await executeFinalCommand(command);
-    }
+    allFinalizers.forEach(executeFinalCommand);
   }
 
-  // Setup skills if configured
   if (config.skills?.length) {
-    log.info(
-      `Setting up skills from ${config.skills.length} repository/repositories...`,
-    );
-    for (const repo of config.skills) {
-      await setupSkills(repo.url);
-    }
+    log.info(`Adding skills from ${config.skills.length} repositories`);
+    config.skills.forEach((repo) => setupSkills(repo.url));
   }
 
-  // Generate gitconfig include after all finalizers
-  await generateGitconfigInclude();
+  generateGitconfigInclude();
 }
 
-async function clean(): Promise<void> {
+function clean(): void {
   const cacheRoot = join(homeDir, ".cache/prof");
-  await exec(`rm -rf "${cacheRoot}"`);
+  exec(`rm -rf "${cacheRoot}"`);
   log.success("Cache cleaned");
 }
 
-async function setupSkills(repoUrl: string): Promise<void> {
+function setupSkills(repoUrl: string): void {
   const cacheDir = join(
     homeDir,
     ".local/share/claude/skills/cache",
     repoUrl.replace(/^https?:\/\/[^\/]+\//, "").replace(/\.git$/, ""),
   );
 
-  await ensureDir(dirname(cacheDir));
-  await ensureDir(join(homeDir, ".claude/skills"));
+  ensureDirSync(dirname(cacheDir));
+  ensureDirSync(join(homeDir, ".claude/skills"));
 
   log.info(`Cloning ${repoUrl}...`);
 
-  // Try to pull if exists, otherwise clone
-  const pullResult = await exec(`cd "${cacheDir}" && git pull 2>/dev/null`, {
+  const pullResult = exec(`cd "${cacheDir}" && git pull 2>/dev/null`, {
     silent: true,
   });
   if (!pullResult.success) {
-    await exec(`git clone ${repoUrl} "${cacheDir}"`);
+    exec(`git clone ${repoUrl} "${cacheDir}"`);
   }
 
   log.info("Installing skills...");
 
-  // Find all SKILL.md files and copy their parent directories
-  const findResult = await exec(
+  const findResult = exec(
     `find "${cacheDir}" -name "SKILL.md" -exec dirname {} \\;`,
     { piped: true },
   );
 
   if (findResult.success && findResult.output) {
-    const skillDirs = findResult.output.trim().split("\n").filter((dir) =>
-      dir.trim()
-    );
-
-    for (const skillDir of skillDirs) {
-      await exec(`cp -rf "${skillDir}" ~/.claude/skills/`);
-    }
+    findResult.output.trim().split("\n")
+      .filter((dir) => dir.trim())
+      .forEach((skillDir) => exec(`cp -rf "${skillDir}" ~/.claude/skills/`));
   }
 
   log.success("Done!");
 }
 
-async function findFirefoxProfiles(): Promise<string[]> {
+function findFirefoxProfiles(): string[] {
   const profilePaths: string[] = [];
 
-  // Check macOS Firefox profiles location
-  const macProfileDir = join(
-    homeDir,
-    "Library/Application Support/Firefox/Profiles",
-  );
-  if (await exists(macProfileDir)) {
-    try {
-      for await (const entry of Deno.readDir(macProfileDir)) {
-        if (entry.isDirectory && entry.name.includes(".default")) {
-          profilePaths.push(join(macProfileDir, entry.name));
-        }
+  const findInDir = (
+    dir: string,
+    callback: (entry: Deno.DirEntry) => boolean,
+  ) => {
+    if (existsSync(dir)) {
+      try {
+        Deno.readDirSync(dir).forEach(callback);
+      } catch (error) {
+        log.warn(`Could not read directory ${dir}: ${error}`);
       }
-    } catch (error) {
-      log.warn(`Could not read macOS Firefox profiles: ${error}`);
     }
-  }
+  };
 
-  // Check Linux Firefox profiles location
-  const linuxProfileDir = join(homeDir, ".mozilla/firefox");
-  if (await exists(linuxProfileDir)) {
-    try {
-      const profilesIni = join(linuxProfileDir, "profiles.ini");
-      if (await exists(profilesIni)) {
-        const content = await Deno.readTextFile(profilesIni);
-        const matches = content.match(/^Path=(.+)$/gm);
-        if (matches) {
-          for (const match of matches) {
-            const path = match.split("=")[1].trim();
-            if (path.includes("default")) {
-              profilePaths.push(join(linuxProfileDir, path));
-            }
-          }
-        }
+  // macOS Firefox profiles
+  const profilesDir = "Library/Application Support/Firefox/Profiles";
+  const userProfilesDir = join(homeDir, profilesDir);
+  findInDir(
+    userProfilesDir,
+    (entry) => {
+      if (entry.isDirectory && entry.name.includes(".default")) {
+        profilePaths.push(
+          join(
+            userProfilesDir,
+            entry.name,
+          ),
+        );
       }
+      return true;
+    },
+  );
 
-      // Also scan for directories with default in name
-      for await (const entry of Deno.readDir(linuxProfileDir)) {
-        if (entry.isDirectory && entry.name.includes(".default")) {
-          const fullPath = join(linuxProfileDir, entry.name);
+  // Linux Firefox profiles
+  findInDir(join(homeDir, ".mozilla/firefox"), (entry) => {
+    if (entry.isDirectory && entry.name.includes(".default")) {
+      const fullPath = join(homeDir, ".mozilla/firefox", entry.name);
+      if (!profilePaths.includes(fullPath)) {
+        profilePaths.push(fullPath);
+      }
+    }
+    return true;
+  });
+
+  const profilesIni = join(homeDir, ".mozilla/firefox/profiles.ini");
+  if (existsSync(profilesIni)) {
+    try {
+      const content = Deno.readTextFileSync(profilesIni);
+      content.match(/^Path=(.+)$/gm)?.forEach((match) => {
+        const path = match.split("=")[1].trim();
+        if (path.includes("default")) {
+          const fullPath = join(homeDir, ".mozilla/firefox", path);
           if (!profilePaths.includes(fullPath)) {
             profilePaths.push(fullPath);
           }
         }
-      }
+      });
     } catch (error) {
-      log.warn(`Could not read Linux Firefox profiles: ${error}`);
+      log.warn(`Could not read profiles.ini: ${error}`);
     }
   }
 
   return profilePaths;
 }
 
-async function installFirefoxUserJs(profileDir: string): Promise<void> {
+function installFirefoxUserJs(profileDir: string): void {
   const userJsPath = join(profileDir, "home/.mozilla/user.js");
-  if (!(await exists(userJsPath))) {
-    return;
-  }
+  if (!existsSync(userJsPath)) return;
 
-  const profiles = await findFirefoxProfiles();
+  const profiles = findFirefoxProfiles();
 
   if (profiles.length === 0) {
     log.warn("No Firefox profiles found");
@@ -479,26 +400,23 @@ async function installFirefoxUserJs(profileDir: string): Promise<void> {
   }
 
   log.info(`Installing user.js to ${profiles.length} Firefox profile(s)...`);
-  let successCount = 0;
-  for (const profile of profiles) {
+
+  const successCount = profiles.reduce((count, profile) => {
     try {
-      await Deno.copyFile(userJsPath, join(profile, "user.js"));
+      Deno.copyFileSync(userJsPath, join(profile, "user.js"));
       log.success(`Installed user.js to ${basename(profile)}`);
-      successCount++;
+      return count + 1;
     } catch (error) {
       log.error(`Failed to install user.js to ${basename(profile)}: ${error}`);
+      return count;
     }
-  }
+  }, 0);
 
-  log.info(
-    `Successfully installed user.js to ${successCount}/${profiles.length} profiles`,
-  );
+  log.info(`Installed user.js to ${successCount}/${profiles.length} profiles`);
 }
 
 function showHelp(): void {
-  console.log(
-    `
-prof - Simple profile composition tool v${VERSION}
+  console.log(`prof - Simple profile composition tool v${VERSION}
 
 USAGE:
     deno run -A prof [OPTIONS] <command>
@@ -512,14 +430,11 @@ COMMANDS:
     init                  Initialize a new configuration file
     apply                 Apply all profiles from configuration
     clean                 Clean up cached files
-    setup-skills <url>    Setup Claude skills from a git repository
-    help                  Show this help message
-`.trim(),
-  );
+    help                  Show this help message`);
 }
 
 // Main execution
-async function main(): Promise<void> {
+function main(): void {
   const flags = parseArgs(Deno.args, {
     boolean: ["help", "version"],
     string: ["config"],
@@ -544,22 +459,13 @@ async function main(): Promise<void> {
   try {
     switch (command) {
       case "init":
-        await initConfig();
+        initConfig();
         break;
       case "apply":
-        await apply();
+        apply();
         break;
       case "clean":
-        await clean();
-        break;
-      case "setup-skills":
-        const repoUrl = flags._[1] as string;
-        if (!repoUrl) {
-          log.error("Repository URL is required for setup-skills command");
-          console.log("Usage: prof setup-skills <repository-url>");
-          Deno.exit(1);
-        }
-        await setupSkills(repoUrl);
+        clean();
         break;
       case undefined:
         showHelp();
@@ -576,5 +482,5 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  await main();
+  main();
 }
