@@ -1,0 +1,87 @@
+#!/usr/bin/env uv run --script
+# /// script
+# # uv script dependencies
+# dependencies = [
+#     "torch",
+#     "torchvision",
+#     "transformers",
+#     "pillow",
+# ]
+# ///
+
+import argparse
+import csv
+import sys
+from pathlib import Path
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate alt text for images using BLIP model"
+    )
+    parser.add_argument(
+        "image_paths",
+        nargs="+",
+        help="Path(s) to the image file(s)",
+    )
+    parser.add_argument(
+        "-p",
+        "--prompt",
+        default=None,
+        help="Optional prompt to guide caption generation",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Output CSV file path (defaults to stdout)",
+    )
+
+    args = parser.parse_args()
+
+    # Validate all image paths exist before loading the model
+    from PIL import Image
+    images = []
+    image_names = []
+
+    for image_path in args.image_paths:
+        try:
+            image = Image.open(image_path).convert("RGB")
+            images.append(image)
+            image_names.append(Path(image_path).name)
+        except FileNotFoundError:
+            print(f"Error: Image file not found: {image_path}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error: Failed to open image {image_path}: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # Only load the model after we have valid images
+    from transformers import BlipForConditionalGeneration, BlipProcessor
+    processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", use_fast=True)
+    model = BlipForConditionalGeneration.from_pretrained(
+        "Salesforce/blip-image-captioning-base"
+    )
+
+    # Process all images
+    results = []
+    for image, name in zip(images, image_names):
+        inputs = processor(image, text=args.prompt, return_tensors="pt")
+        out = model.generate(**inputs, max_new_tokens=40)
+        caption = processor.decode(out[0], skip_special_tokens=True)
+        results.append({"name": name, "label": caption})
+
+    # Output results as CSV
+    if args.output:
+        with open(args.output, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["name", "label"])
+            writer.writeheader()
+            writer.writerows(results)
+    else:
+        writer = csv.DictWriter(sys.stdout, fieldnames=["name", "label"])
+        writer.writeheader()
+        writer.writerows(results)
+
+
+if __name__ == "__main__":
+    main()
