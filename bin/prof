@@ -4,6 +4,7 @@ import { basename, dirname, join } from "jsr:@std/path";
 import { ensureDirSync, existsSync } from "jsr:@std/fs";
 import { parse as parseArgs } from "jsr:@std/flags";
 import { parse as parseCsv } from "jsr:@std/csv";
+import { exit } from "node:process";
 
 // Types
 type Profile = { path: string } | { url: string };
@@ -43,7 +44,10 @@ skills:
 // State
 let configPath = DEFAULT_CONFIG_FILE;
 const homeDir = Deno.env.get("HOME") ?? Deno.cwd();
-const cacheDir = join(homeDir, ".cache/prof/profiles");
+const CACHE_DIR = join(homeDir, ".cache/prof");
+const skillsCacheDir = join(CACHE_DIR, "skills");
+const profilesCacheDir = join(CACHE_DIR, "profiles");
+const claudeSkillsDir = join(homeDir, ".claude/skills");
 
 // Logging utilities
 const log = {
@@ -78,7 +82,7 @@ function exec(
 function initConfig(): void {
   if (existsSync(configPath)) {
     log.error("Configuration file already exists");
-    Deno.exit(1);
+    exit(1);
   }
 
   Deno.writeTextFileSync(configPath, INIT_CONFIG);
@@ -124,18 +128,11 @@ function collectAllProfiles(profiles: Profile[]): Profile[] {
 function resolveProfile(profile: Profile): string | null {
   if ("url" in profile) {
     const profileName = basename(profile.url).replace(/\.git$/, "");
-    const localPath = join(cacheDir, profileName);
+    const localPath = join(profilesCacheDir, profileName);
 
-    ensureDirSync(cacheDir);
-
-    const action = existsSync(localPath) ? "Updated" : "Cloned";
-    const cmd = existsSync(localPath)
-      ? `cd "${localPath}" && git pull origin HEAD`
-      : `git clone "${profile.url}" "${localPath}"`;
-
-    exec(cmd);
-    log.success(`${action} ${profileName}`);
-
+    ensureDirSync(profilesCacheDir);
+    cloneUpdate(localPath, profile.url);
+    log.success(`Updated ${profileName}`);
     return localPath;
   }
 
@@ -149,7 +146,7 @@ function ensureConfigExists(): void {
   if (!existsSync(configPath)) {
     log.error(`Configuration file not found: ${configPath}`);
     log.info("Run 'prof init' to create one");
-    Deno.exit(1);
+    exit(1);
   }
 }
 
@@ -275,7 +272,7 @@ function apply(): void {
 
   if (config.skills?.length) {
     log.info(`Adding skills from ${config.skills.length} repositories`);
-    config.skills.forEach((repo) => setupSkills(repo.url));
+    config.skills.forEach((repo) => setupSkill(repo.url));
   }
 
   generateGitconfigInclude();
@@ -287,36 +284,47 @@ function clean(): void {
   log.success("Cache cleaned");
 }
 
-function setupSkills(repoUrl: string): void {
-  const cacheDir = join(
-    homeDir,
-    ".local/share/claude/skills/cache",
+function cloneUpdate(targetDir: string, repoUrl: String) {
+  if (existsSync(targetDir)) {
+    const pullResult = exec(`cd "${targetDir}" && git fetch && git reset --hard origin/HEAD`, {
+      silent: true,
+    });
+
+    if (!pullResult.success) {
+      log.error("Error pulling repository");
+      exit(1);
+    }
+  } else {
+    let cloneResult = exec(`git clone ${repoUrl} "${targetDir}"`);
+    if (!cloneResult.success) {
+      log.error("Error cloning repository");
+      exit(1);
+    }
+  }
+}
+
+function setupSkill(repoUrl: string): void {
+  const skillCacheDir = join(
+    skillsCacheDir,
     repoUrl.replace(/^https?:\/\/[^\/]+\//, "").replace(/\.git$/, ""),
   );
 
-  ensureDirSync(dirname(cacheDir));
-  ensureDirSync(join(homeDir, ".claude/skills"));
+  ensureDirSync(dirname(skillCacheDir));
+  ensureDirSync(claudeSkillsDir);
 
   log.info(`Cloning ${repoUrl}...`);
-
-  const pullResult = exec(`cd "${cacheDir}" && git pull 2>/dev/null`, {
-    silent: true,
-  });
-  if (!pullResult.success) {
-    exec(`git clone ${repoUrl} "${cacheDir}"`);
-  }
+  cloneUpdate(skillCacheDir, repoUrl);
 
   log.info("Installing skills...");
-
   const findResult = exec(
-    `find "${cacheDir}" -name "SKILL.md" -exec dirname {} \\;`,
+    `find "${skillCacheDir}" -name "SKILL.md" -exec dirname {} \\;`,
     { piped: true },
   );
 
   if (findResult.success && findResult.output) {
     findResult.output.trim().split("\n")
       .filter((dir) => dir.trim())
-      .forEach((skillDir) => exec(`cp -rf "${skillDir}" ~/.claude/skills/`));
+      .forEach((skillDir) => exec(`cp -rf "${skillDir}" ${claudeSkillsDir}/`));
   }
 
   log.success("Done!");
