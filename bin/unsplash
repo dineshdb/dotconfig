@@ -21,19 +21,45 @@ function getConfig(): string {
   }
 }
 
-async function search(query: string, num: number): Promise<void> {
+interface SearchOptions {
+  num: number;
+  page: number;
+  orientation?: string;
+  color?: string;
+  order_by?: string;
+  collections?: string;
+  content_filter?: string;
+}
+
+async function search(query: string, opts: SearchOptions): Promise<void> {
   const key = getConfig();
-  const url = `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=${num}`;
+  const params = new URLSearchParams({
+    query,
+    per_page: String(opts.num),
+    page: String(opts.page),
+  });
+  if (opts.orientation) params.set("orientation", opts.orientation);
+  if (opts.color) params.set("color", opts.color);
+  if (opts.order_by) params.set("order_by", opts.order_by);
+  if (opts.collections) params.set("collections", opts.collections);
+  if (opts.content_filter) params.set("content_filter", opts.content_filter);
+
+  const url = `https://api.unsplash.com/search/photos?${params}`;
 
   const res = await fetch(url, { headers: { Authorization: `Client-ID ${key}` } });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
 
-  const { results } = await res.json();
+  const { results, total } = await res.json();
 
   for (const [i, p] of results.entries()) {
     const desc = p.alt_description || p.description || "No description";
-    console.log(`\n[${i + 1}] ${desc}\n    By: ${p.user.name} (@${p.user.username})\n    URL: ${p.urls.full}`);
+    const likes = p.likes ?? 0;
+    console.log(`\n[${i + 1}] ${desc}`);
+    console.log(`    By: ${p.user.name} (@${p.user.username})`);
+    console.log(`    Size: ${p.width}x${p.height} | Likes: ${likes}`);
+    console.log(`    URL: ${p.urls.full}`);
   }
+  console.log(`\nShowing ${results.length} of ${total} results (page ${opts.page})`);
 }
 
 const { values, positionals } = parseArgs({
@@ -41,13 +67,77 @@ const { values, positionals } = parseArgs({
   options: {
     help: { type: "boolean", default: false },
     n: { type: "string", default: "10" },
+    p: { type: "string", default: "1" },
+    orientation: { type: "string" },
+    color: { type: "string" },
+    order_by: { type: "string" },
+    collections: { type: "string" },
+    content_filter: { type: "string" },
   },
   allowPositionals: true,
 });
 const [cmd, query] = positionals;
 
 if (values.help || !cmd) {
-  console.log(`Usage: unsplash <search|config> [query] [-n <num>]\n  search <query>  Search photos\n  config          Show config`);
+  console.log(`UNSPLASH PHOTO SEARCH CLI
+
+USAGE:
+  unsplash search <query> [options]
+  unsplash config
+  unsplash help
+
+COMMANDS:
+  search <query>  Search for photos on Unsplash
+  config          Display the configured API key (masked)
+  help            Show this help message
+
+SEARCH OPTIONS:
+  -n, --num <number>         Number of results per page (default: 10, max: 30)
+  -p, --page <number>        Page number to retrieve (default: 1)
+  --orientation <value>      Filter by photo orientation
+                             Valid: landscape, portrait, squarish
+  --color <value>            Filter by dominant color
+                             Valid: black_and_white, black, white, yellow,
+                                    orange, red, purple, magenta, green, teal, blue
+  --order_by <value>         Sort order for results
+                             Valid: relevant (default), latest
+  --collections <ids>        Collection ID(s) to narrow search
+                             Format: comma-separated IDs (e.g., "123,456")
+  --content_filter <value>   Content safety filter level
+                             Valid: low (default), high
+
+OUTPUT FORMAT:
+  For each photo result, the following information is displayed:
+    [index] <description or alt_description>
+        By: <photographer name> (@<username>)
+        Size: <width>x<height> | Likes: <likes_count>
+        URL: <full_image_url>
+
+  After all results, a summary line shows:
+    Showing <results_count> of <total_results> results (page <page_number>)
+
+EXAMPLES:
+  # Basic search
+  unsplash search "mountains"
+
+  # Search for horizontal photos only
+  unsplash search "sunset" --orientation landscape
+
+  # Search for blue-colored photos, sorted by latest
+  unsplash search "ocean" --color blue --order_by latest
+
+  # Get 5 results from page 2
+  unsplash search "city" -n 5 -p 2
+
+  # Search within specific collections
+  unsplash search "nature" --collections "123,456,789"
+
+  # High content safety filter for younger audiences
+  unsplash search "animals" --content_filter high
+
+  # Combine multiple filters
+  unsplash search "portrait" --orientation portrait --color black_and_white -n 15
+`);
   exit(0);
 }
 
@@ -57,7 +147,15 @@ if (cmd === "config") {
     console.log(`Key: ${accessKey.slice(0, 10)}...${accessKey.slice(-4)}`);
   } catch { console.log("No config found"); }
 } else if (cmd === "search") {
-  await search(String(query || ""), Number(values.n));
+  await search(String(query || ""), {
+    num: Number(values.n),
+    page: Number(values.p),
+    orientation: values.orientation,
+    color: values.color,
+    order_by: values.order_by,
+    collections: values.collections,
+    content_filter: values.content_filter,
+  });
 } else {
   console.error("Unknown command. Use 'help' for usage.");
 }
